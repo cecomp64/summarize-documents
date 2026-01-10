@@ -1,0 +1,38 @@
+SAN JOSE AMATEUR ASTRONOMERS BULLETIN
+April 1975
+
+[Page 1]
+
+RECENT ACTIVITIES
+
+The general meeting on March 7, 1975 was held at the Olinder Center in San Jose. Club members gathered to discuss the recent observation session from the previous weekend. John Smith presented his findings on the Virgo Cluster, which he observed using the club's 12 inch telescope at the Fremont Peak Observatory. The observation revealed numerous galaxies including M87, M86, and M84. Weather conditions were excellent with seeing estimated at 7/10.
+
+The club's ongoing project to grind a 15 inch mirror was also discussed. Progress has been steady, and the mirror is now in the fine grinding stage. Members interested in participating are encouraged to contact the telescope making committee.
+
+UPCOMING EVENTS
+
+Mark your calendars for the Spring Star Party scheduled for April 25-27, 1975 at Fremont Peak. This event will feature special guest speaker Dr. Robert Johnson from UC Berkeley who will present on recent discoveries in planetary astronomy. The weekend will include both daytime solar observation sessions and nighttime deep sky viewing.
+
+Members are reminded to bring their own equipment, food, and camping gear. The club will provide coffee and donuts on Saturday morning. Sign-up sheets are available at the next meeting.
+
+[Page 2]
+
+OBSERVING NOTES
+
+Jupiter continues to be a spectacular target in the evening sky. The Great Red Spot is well-positioned for viewing between 9 PM and midnight during the first week of April. Saturn rises around 2 AM and presents a beautiful view of its ring system, which is now at a favorable tilt of 23 degrees.
+
+For deep sky enthusiasts, the spring galaxies are now in prime position. The Leo Triplet (M65, M66, and NGC 3628) makes an excellent target for telescopes 6 inches and larger. The Virgo Cluster continues to dominate the midnight sky with hundreds of galaxies accessible to medium and large telescopes.
+
+TECHNICAL ARTICLE: MIRROR MAKING BASICS
+
+By Tom Anderson
+
+The art of telescope mirror making has been practiced by amateur astronomers for over a century. The basic process involves grinding and polishing a glass disc to a precise parabolic shape that can focus light to a single point.
+
+The process begins with two glass discs of equal diameter - one becomes the mirror and the other serves as the grinding tool. Using progressively finer grades of abrasive grit, the optician grinds the mirror surface into a spherical curve. This rough grinding stage typically takes 10-20 hours of work.
+
+After achieving the correct spherical curve, the mirror enters the fine grinding stage using finer grits. This prepares the surface for polishing. The polishing stage uses a pitch lap and rouge compound to create a smooth, reflective surface.
+
+The final and most challenging step is figuring - modifying the spherical curve into a parabola. This requires careful testing using the Foucault test and selective polishing to achieve the proper shape.
+
+For beginners, we recommend starting with a 6 inch f/8 mirror. This size offers good performance while being manageable for a first project.
