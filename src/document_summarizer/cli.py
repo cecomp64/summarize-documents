@@ -42,6 +42,21 @@ def main():
         help="Claude model to use (default: claude-sonnet-4-20250514)"
     )
     parser.add_argument(
+        "--model-provider",
+        choices=["anthropic", "ollama"],
+        default="anthropic",
+        help="Model provider to use: 'anthropic' (default) or 'ollama' for local models"
+    )
+    parser.add_argument(
+        "--ollama-model",
+        default="llama3.2",
+        help="Ollama model to use (default: llama3.2). Used only with --model-provider=ollama"
+    )
+    parser.add_argument(
+        "--ollama-host",
+        help="Ollama host URL (e.g., http://localhost:11434). Used only with --model-provider=ollama"
+    )
+    parser.add_argument(
         "--combined",
         action="store_true",
         help="Create a single combined JSON file instead of one per document"
@@ -49,7 +64,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        help="Output path for combined JSON (used with --combined)"
+        help="Output directory or file path. For --combined: path to combined JSON file. Without --combined: directory to save individual JSON files (default: next to source files)"
     )
 
     args = parser.parse_args()
@@ -71,12 +86,27 @@ def main():
     # Get API key
     api_key = args.api_key or os.getenv("ANTHROPIC_API_KEY")
 
-    if not api_key:
-        print("Warning: No API key provided. Summaries will be basic excerpts.")
-        print("Set ANTHROPIC_API_KEY environment variable or use --api-key option.")
+    # Check for required configuration based on provider
+    if args.model_provider == "anthropic":
+        if not api_key:
+            print("Warning: No Anthropic API key provided. Summaries will be basic excerpts.")
+            print("Set ANTHROPIC_API_KEY environment variable or use --api-key option.")
+    elif args.model_provider == "ollama":
+        print(f"Using Ollama with model: {args.ollama_model}")
+        if args.ollama_host:
+            print(f"Ollama host: {args.ollama_host}")
+
+    # Get Ollama configuration from environment if not provided
+    ollama_host = args.ollama_host or os.getenv("OLLAMA_HOST")
 
     # Initialize processor
-    processor = DocumentProcessor(api_key, model=args.model)
+    processor = DocumentProcessor(
+        api_key=api_key,
+        model=args.model,
+        model_provider=args.model_provider,
+        ollama_model=args.ollama_model,
+        ollama_host=ollama_host
+    )
 
     # Find files
     directory = args.directory.resolve()
@@ -92,6 +122,14 @@ def main():
 
     print(f"Found {len(txt_files)} file(s) to process\n")
 
+    # Determine output directory for distributed files
+    output_dir = None
+    if args.output and not args.combined:
+        # If output specified without --combined, treat as output directory
+        output_dir = args.output
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Saving JSON files to: {output_dir}\n")
+
     # Process documents
     documents = []
     for txt_path in txt_files:
@@ -101,7 +139,7 @@ def main():
         # Save individual JSON unless combined output requested
         if not args.combined:
             output = processor.generate_output([doc])
-            processor.save_json(output, txt_path)
+            processor.save_json(output, txt_path, output_dir)
 
         print()
 
@@ -109,6 +147,8 @@ def main():
     if args.combined:
         output = processor.generate_output(documents)
         output_path = args.output or directory / "combined_output.json"
+        # Ensure parent directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         print(f"Saved combined output: {output_path}")

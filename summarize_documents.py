@@ -14,6 +14,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from anthropic import Anthropic
 from dotenv import load_dotenv
+import ollama
 
 
 class Article:
@@ -90,8 +91,19 @@ class Document:
 class DocumentProcessor:
     """Processes documents and extracts articles."""
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.client = Anthropic(api_key=api_key) if api_key else None
+    def __init__(self, api_key: Optional[str] = None, model_provider: str = "anthropic",
+                 ollama_model: str = "llama3.2", ollama_host: Optional[str] = None):
+        self.model_provider = model_provider
+        self.ollama_model = ollama_model
+        self.ollama_host = ollama_host
+
+        if model_provider == "anthropic":
+            self.client = Anthropic(api_key=api_key) if api_key else None
+        elif model_provider == "ollama":
+            self.client = None  # Ollama uses direct API calls
+        else:
+            raise ValueError(f"Unknown model provider: {model_provider}")
+
         self.page_marker_pattern = re.compile(r'\[?(?:page|pg\.?|p\.?)\s*(\d+)\]?', re.IGNORECASE)
 
     def find_files(self, directory: Path, pattern: str = "*.txt") -> List[Path]:
@@ -178,7 +190,19 @@ class DocumentProcessor:
         return title, body, page_start, page_end
 
     def process_with_ai(self, article: Article, document: Document) -> None:
-        """Use Claude API to generate summary, categories, and keywords."""
+        """Use AI (Anthropic or Ollama) to generate summary, categories, and keywords."""
+        if self.model_provider == "anthropic":
+            self._process_with_anthropic(article, document)
+        elif self.model_provider == "ollama":
+            self._process_with_ollama(article, document)
+        else:
+            # Fallback without AI
+            article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
+            article.categories = ["uncategorized"]
+            article.keywords = []
+
+    def _process_with_anthropic(self, article: Article, document: Document) -> None:
+        """Use Anthropic Claude API to generate summary, categories, and keywords."""
         if not self.client:
             # Fallback without AI
             article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
@@ -226,6 +250,56 @@ Respond in JSON format:
 
         except Exception as e:
             print(f"Error processing article '{article.title}': {e}")
+            # Fallback
+            article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
+            article.categories = ["uncategorized"]
+            article.keywords = []
+
+    def _process_with_ollama(self, article: Article, document: Document) -> None:
+        """Use Ollama API to generate summary, categories, and keywords."""
+        prompt = f"""Analyze the following article and provide:
+1. A concise summary (2-3 sentences)
+2. Relevant categories (e.g., events, observing reports, news, technical, etc.)
+3. Key keywords or topics
+
+Article Title: {article.title}
+Document: {document.title}
+
+Content:
+{article.content[:2000]}
+
+Respond in JSON format:
+{{
+  "summary": "...",
+  "categories": ["category1", "category2"],
+  "keywords": ["keyword1", "keyword2", "keyword3"]
+}}"""
+
+        try:
+            # Build kwargs for ollama.chat
+            chat_kwargs = {
+                'model': self.ollama_model,
+                'messages': [{'role': 'user', 'content': prompt}],
+                'format': 'json'
+            }
+
+            # Add host if specified
+            if self.ollama_host:
+                chat_kwargs['host'] = self.ollama_host
+
+            response = ollama.chat(**chat_kwargs)
+
+            response_text = response['message']['content']
+
+            # Parse JSON response
+            result = json.loads(response_text)
+
+            article.summary = result.get("summary", "")
+            article.categories = result.get("categories", [])
+            article.keywords = result.get("keywords", [])
+
+        except Exception as e:
+            print(f"Error processing article '{article.title}' with Ollama: {e}")
             # Fallback
             article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
             article.categories = ["uncategorized"]
@@ -297,9 +371,16 @@ Respond in JSON format:
 
         return output
 
-    def save_json(self, output: Dict, txt_path: Path) -> None:
-        """Save JSON output next to the text file."""
-        json_path = txt_path.with_suffix('.json')
+    def save_json(self, output: Dict, txt_path: Path, output_dir: Optional[Path] = None) -> None:
+        """Save JSON output next to the text file or in specified output directory."""
+        if output_dir:
+            # Save in output directory with same filename
+            output_dir.mkdir(parents=True, exist_ok=True)
+            json_path = output_dir / f"{txt_path.stem}.json"
+        else:
+            # Save next to text file
+            json_path = txt_path.with_suffix('.json')
+
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         print(f"Saved: {json_path}")
@@ -325,6 +406,21 @@ def main():
         help="Anthropic API key (or set ANTHROPIC_API_KEY env variable)"
     )
     parser.add_argument(
+        "--model-provider",
+        choices=["anthropic", "ollama"],
+        default="anthropic",
+        help="Model provider to use: 'anthropic' (default) or 'ollama' for local models"
+    )
+    parser.add_argument(
+        "--ollama-model",
+        default="llama3.2",
+        help="Ollama model to use (default: llama3.2). Used only with --model-provider=ollama"
+    )
+    parser.add_argument(
+        "--ollama-host",
+        help="Ollama host URL (e.g., http://localhost:11434). Used only with --model-provider=ollama"
+    )
+    parser.add_argument(
         "--combined",
         action="store_true",
         help="Create a single combined JSON file instead of one per document"
@@ -332,7 +428,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        help="Output path for combined JSON (used with --combined)"
+        help="Output directory or file path. For --combined: path to combined JSON file. Without --combined: directory to save individual JSON files (default: next to source files)"
     )
 
     args = parser.parse_args()
@@ -343,12 +439,26 @@ def main():
     # Get API key
     api_key = args.api_key or os.getenv("ANTHROPIC_API_KEY")
 
-    if not api_key:
-        print("Warning: No API key provided. Summaries will be basic excerpts.")
-        print("Set ANTHROPIC_API_KEY environment variable or use --api-key option.")
+    # Check for required configuration based on provider
+    if args.model_provider == "anthropic":
+        if not api_key:
+            print("Warning: No Anthropic API key provided. Summaries will be basic excerpts.")
+            print("Set ANTHROPIC_API_KEY environment variable or use --api-key option.")
+    elif args.model_provider == "ollama":
+        print(f"Using Ollama with model: {args.ollama_model}")
+        if args.ollama_host:
+            print(f"Ollama host: {args.ollama_host}")
+
+    # Get Ollama configuration from environment if not provided
+    ollama_host = args.ollama_host or os.getenv("OLLAMA_HOST")
 
     # Initialize processor
-    processor = DocumentProcessor(api_key)
+    processor = DocumentProcessor(
+        api_key=api_key,
+        model_provider=args.model_provider,
+        ollama_model=args.ollama_model,
+        ollama_host=ollama_host
+    )
 
     # Find files
     directory = args.directory.resolve()
@@ -364,6 +474,14 @@ def main():
 
     print(f"Found {len(txt_files)} file(s) to process\n")
 
+    # Determine output directory for distributed files
+    output_dir = None
+    if args.output and not args.combined:
+        # If output specified without --combined, treat as output directory
+        output_dir = args.output
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Saving JSON files to: {output_dir}\n")
+
     # Process documents
     documents = []
     for txt_path in txt_files:
@@ -373,7 +491,7 @@ def main():
         # Save individual JSON unless combined output requested
         if not args.combined:
             output = processor.generate_output([doc])
-            processor.save_json(output, txt_path)
+            processor.save_json(output, txt_path, output_dir)
 
         print()
 
@@ -381,6 +499,8 @@ def main():
     if args.combined:
         output = processor.generate_output(documents)
         output_path = args.output or directory / "combined_output.json"
+        # Ensure parent directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         print(f"Saved combined output: {output_path}")

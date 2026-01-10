@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import List, Dict, Optional
 from anthropic import Anthropic
+import ollama
 
 
 class Article:
@@ -83,9 +84,21 @@ class Document:
 class DocumentProcessor:
     """Processes documents and extracts articles."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514"):
-        self.client = Anthropic(api_key=api_key) if api_key else None
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514",
+                 model_provider: str = "anthropic", ollama_model: str = "llama3.2",
+                 ollama_host: Optional[str] = None):
+        self.model_provider = model_provider
         self.model = model
+        self.ollama_model = ollama_model
+        self.ollama_host = ollama_host
+
+        if model_provider == "anthropic":
+            self.client = Anthropic(api_key=api_key) if api_key else None
+        elif model_provider == "ollama":
+            self.client = None  # Ollama uses direct API calls
+        else:
+            raise ValueError(f"Unknown model provider: {model_provider}")
+
         self.page_marker_pattern = re.compile(r'\[?(?:page|pg\.?|p\.?)\s*(\d+)\]?', re.IGNORECASE)
 
     def find_files(self, directory: Path, pattern: str = "*.txt") -> List[Path]:
@@ -170,7 +183,19 @@ class DocumentProcessor:
         return title, body, page_start, page_end
 
     def process_with_ai(self, article: Article, document: Document) -> None:
-        """Use Claude API to generate summary, categories, and keywords."""
+        """Use AI (Anthropic or Ollama) to generate summary, categories, and keywords."""
+        if self.model_provider == "anthropic":
+            self._process_with_anthropic(article, document)
+        elif self.model_provider == "ollama":
+            self._process_with_ollama(article, document)
+        else:
+            # Fallback without AI
+            article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
+            article.categories = ["uncategorized"]
+            article.keywords = []
+
+    def _process_with_anthropic(self, article: Article, document: Document) -> None:
+        """Use Anthropic Claude API to generate summary, categories, and keywords."""
         if not self.client:
             # Fallback without AI
             article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
@@ -218,6 +243,56 @@ Respond in JSON format:
 
         except Exception as e:
             print(f"Error processing article '{article.title}': {e}")
+            # Fallback
+            article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
+            article.categories = ["uncategorized"]
+            article.keywords = []
+
+    def _process_with_ollama(self, article: Article, document: Document) -> None:
+        """Use Ollama API to generate summary, categories, and keywords."""
+        prompt = f"""Analyze the following article and provide:
+1. A concise summary (2-3 sentences)
+2. Relevant categories (e.g., events, observing reports, news, technical, etc.)
+3. Key keywords or topics
+
+Article Title: {article.title}
+Document: {document.title}
+
+Content:
+{article.content[:2000]}
+
+Respond in JSON format:
+{{
+  "summary": "...",
+  "categories": ["category1", "category2"],
+  "keywords": ["keyword1", "keyword2", "keyword3"]
+}}"""
+
+        try:
+            # Build kwargs for ollama.chat
+            chat_kwargs = {
+                'model': self.ollama_model,
+                'messages': [{'role': 'user', 'content': prompt}],
+                'format': 'json'
+            }
+
+            # Add host if specified
+            if self.ollama_host:
+                chat_kwargs['host'] = self.ollama_host
+
+            response = ollama.chat(**chat_kwargs)
+
+            response_text = response['message']['content']
+
+            # Parse JSON response
+            result = json.loads(response_text)
+
+            article.summary = result.get("summary", "")
+            article.categories = result.get("categories", [])
+            article.keywords = result.get("keywords", [])
+
+        except Exception as e:
+            print(f"Error processing article '{article.title}' with Ollama: {e}")
             # Fallback
             article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
             article.categories = ["uncategorized"]
@@ -289,9 +364,16 @@ Respond in JSON format:
 
         return output
 
-    def save_json(self, output: Dict, txt_path: Path) -> None:
-        """Save JSON output next to the text file."""
-        json_path = txt_path.with_suffix('.json')
+    def save_json(self, output: Dict, txt_path: Path, output_dir: Optional[Path] = None) -> None:
+        """Save JSON output next to the text file or in specified output directory."""
+        if output_dir:
+            # Save in output directory with same filename
+            output_dir.mkdir(parents=True, exist_ok=True)
+            json_path = output_dir / f"{txt_path.stem}.json"
+        else:
+            # Save next to text file
+            json_path = txt_path.with_suffix('.json')
+
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         print(f"Saved: {json_path}")
