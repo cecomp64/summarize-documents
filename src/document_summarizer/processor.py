@@ -83,8 +83,9 @@ class Document:
 class DocumentProcessor:
     """Processes documents and extracts articles."""
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514"):
         self.client = Anthropic(api_key=api_key) if api_key else None
+        self.model = model
         self.page_marker_pattern = re.compile(r'\[?(?:page|pg\.?|p\.?)\s*(\d+)\]?', re.IGNORECASE)
 
     def find_files(self, directory: Path, pattern: str = "*.txt") -> List[Path]:
@@ -197,7 +198,7 @@ Respond in JSON format:
 
         try:
             response = self.client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model=self.model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}]
             )

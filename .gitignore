@@ -13,3 +13,5 @@ build/
 venv/
 ENV/
 .DS_Store
+examples/*.json
+examples/pdfs/*.json

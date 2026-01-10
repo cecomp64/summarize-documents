@@ -37,6 +37,11 @@ def main():
         help="Anthropic API key (or set ANTHROPIC_API_KEY env variable)"
     )
     parser.add_argument(
+        "--model",
+        default="claude-sonnet-4-20250514",
+        help="Claude model to use (default: claude-sonnet-4-20250514)"
+    )
+    parser.add_argument(
         "--combined",
         action="store_true",
         help="Create a single combined JSON file instead of one per document"
@@ -71,7 +76,7 @@ def main():
         print("Set ANTHROPIC_API_KEY environment variable or use --api-key option.")
 
     # Initialize processor
-    processor = DocumentProcessor(api_key)
+    processor = DocumentProcessor(api_key, model=args.model)
 
     # Find files
     directory = args.directory.resolve()

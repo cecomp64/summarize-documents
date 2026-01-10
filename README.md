@@ -84,19 +84,21 @@ document-summarizer /path/to/documents --combined --output output.json
 ### Command-line options
 
 ```
-usage: document-summarizer [-h] [--pattern PATTERN] [--api-key API_KEY]
-                           [--combined] [--output OUTPUT] [--version] directory
+usage: document-summarizer [-h] [--version] [--pattern PATTERN]
+                           [--api-key API_KEY] [--model MODEL] [--combined]
+                           [--output OUTPUT] [directory]
 
 positional arguments:
   directory            Directory to search for text files
 
 optional arguments:
   -h, --help           Show this help message and exit
+  --version            Show version and exit
   --pattern PATTERN    Glob pattern for files to process (default: *.txt)
   --api-key API_KEY    Anthropic API key (or set ANTHROPIC_API_KEY env variable)
+  --model MODEL        Claude model to use (default: claude-sonnet-4-20250514)
   --combined           Create a single combined JSON file instead of one per document
   --output OUTPUT      Output path for combined JSON (used with --combined)
-  --version            Show version and exit
 ```
 
 ## Output Format
@@ -200,6 +202,12 @@ document-summarizer ./articles --pattern "*.md" --combined --output all_articles
 document-summarizer ./documents --api-key sk-ant-xxxxx
 ```
 
+### Example 4: Use a different Claude model
+
+```bash
+document-summarizer ./documents --model claude-3-5-haiku-20241022
+```
+
 ## Customization
 
 ### Adjusting Article Detection
@@ -210,7 +218,7 @@ Edit the `_is_section_header()` method in [src/document_summarizer/processor.py]
 
 Edit the `process_with_ai()` method to adjust:
 - The prompt sent to Claude
-- The model used (`claude-3-5-sonnet-20241022` by default)
+- The model used (`claude-sonnet-4-20250514` by default)
 - Token limits
 - Output format
 
