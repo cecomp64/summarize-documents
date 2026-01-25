@@ -95,15 +95,13 @@ class DocumentProcessor:
     """Processes documents and extracts articles."""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514",
-                 model_provider: str = "anthropic", ollama_model: str = "llama3.2",
-                 ollama_host: Optional[str] = None,
+                 model_provider: str = "anthropic",
                  generate_embeddings: bool = False, embedding_provider: str = "openai",
                  embedding_model: Optional[str] = None, openai_api_key: Optional[str] = None,
                  gemini_api_key: Optional[str] = None):
         self.model_provider = model_provider
         self.model = model
-        self.ollama_model = ollama_model
-        self.ollama_host = ollama_host
+        self.api_key = api_key
         self.generate_embeddings = generate_embeddings
         self.embedding_provider = embedding_provider
 
@@ -128,6 +126,8 @@ class DocumentProcessor:
             self.client = Anthropic(api_key=api_key) if api_key else None
         elif model_provider == "ollama":
             self.client = None  # Ollama uses direct API calls
+        elif model_provider == "gemini":
+            self.client = genai.Client(api_key=api_key) if api_key else None
         else:
             raise ValueError(f"Unknown model provider: {model_provider}")
 
@@ -163,6 +163,38 @@ class DocumentProcessor:
         except Exception as e:
             print(f"Error loading {json_path}: {e}")
             return None
+
+    def load_document_from_json(self, json_path: Path, txt_path: Path, root_dir: Path) -> Optional[Document]:
+        """Load a Document object from existing JSON file."""
+        data = self.load_existing_json(json_path)
+        if not data or "documents" not in data or "articles" not in data:
+            return None
+
+        # Create Document object
+        document = Document(txt_path, root_dir)
+
+        # Load document metadata
+        if data["documents"]:
+            doc_data = data["documents"][0]
+            document.id = doc_data.get("id", document.id)
+            document.title = doc_data.get("title", "")
+            document.issue_date = doc_data.get("issueDate")
+            document.pdf_path = doc_data.get("pdfPath")
+
+        # Load articles
+        for article_data in data["articles"]:
+            article = Article(
+                title=article_data.get("title", ""),
+                content="",  # Content not stored in JSON
+                page_start=article_data.get("pageStart"),
+                page_end=article_data.get("pageEnd")
+            )
+            article.summary = article_data.get("summary", "")
+            article.categories = article_data.get("categories", [])
+            article.keywords = article_data.get("keywords", [])
+            document.articles.append(article)
+
+        return document
 
     def generate_embeddings_from_json(self, json_path: Path) -> Optional[Path]:
         """Generate embeddings from existing JSON summary file."""
@@ -234,6 +266,8 @@ class DocumentProcessor:
                 articles = self._extract_articles_with_ai_anthropic(content, document)
             elif self.model_provider == "ollama":
                 articles = self._extract_articles_with_ai_ollama(content, document)
+            elif self.model_provider == "gemini" and self.client:
+                articles = self._extract_articles_with_ai_gemini(content, document)
             else:
                 # Fallback to page-based segmentation
                 articles = self._extract_articles_by_page(content, document)
@@ -413,17 +447,12 @@ Respond with a JSON array of articles:
 ]"""
 
         try:
-            chat_kwargs = {
-                'model': self.ollama_model,
-                'messages': [{'role': 'user', 'content': prompt}],
-                'format': 'json'
-            }
-
-            if self.ollama_host:
-                chat_kwargs['host'] = self.ollama_host
-
             api_start = time.time()
-            response = ollama.chat(**chat_kwargs)
+            response = ollama.chat(
+                model=self.model,
+                messages=[{'role': 'user', 'content': prompt}],
+                format='json'
+            )
             api_time = time.time() - api_start
             print(f"  Ollama API call completed in {api_time:.2f}s")
 
@@ -483,6 +512,130 @@ Respond with a JSON array of articles:
         except Exception as e:
             elapsed = time.time() - start_time
             print(f"  Error in AI article extraction with Ollama after {elapsed:.2f}s: {e}")
+            print("  Falling back to page-based segmentation")
+            return self._extract_articles_by_page(content, document)
+
+    def _extract_articles_with_ai_gemini(self, content: str, document: Document) -> List[Article]:
+        """Use Gemini to intelligently segment document into articles."""
+        print("  Using Gemini to identify article boundaries...")
+        start_time = time.time()
+
+        # Use full content for analysis
+        content_for_analysis = content
+        print(f"  Analyzing {len(content_for_analysis):,} characters")
+
+        prompt = f"""Analyze this document and identify distinct articles or sections within it.
+
+Document content:
+{content_for_analysis}
+
+Instructions:
+- Identify natural article boundaries based on content, topics, and structure
+- Each article should have a clear topic or theme
+- Avoid breaking up content that belongs together
+- Watch out for numbered lists or bullet points - these are NOT article boundaries
+- If no clear articles exist, segment by major topics or by page (look for [Page N] markers)
+- Each article should be at least 100 characters long
+- Provide a descriptive title for each article
+
+Respond with a JSON array of articles:
+[
+  {{
+    "title": "Article title",
+    "start_marker": "First few words of the article (10-20 words)",
+    "end_marker": "Last few words of the article (10-20 words)"
+  }}
+]"""
+
+        try:
+            api_start = time.time()
+
+            # Try with JSON mode first
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config={
+                        'response_mime_type': 'application/json'
+                    }
+                )
+            except Exception as json_error:
+                # Check if it's a JSON mode not supported error
+                error_str = str(json_error)
+                if 'JSON mode is not enabled' in error_str or 'INVALID_ARGUMENT' in error_str:
+                    print(f"  Note: JSON mode not supported by {self.model}, using text mode")
+                    # Fall back to text mode
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=prompt
+                    )
+                else:
+                    raise
+
+            api_time = time.time() - api_start
+            print(f"  Gemini API call completed in {api_time:.2f}s")
+
+            response_text = response.text
+
+            # Extract JSON from markdown code blocks if present
+            json_match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', response_text, re.DOTALL)
+            if json_match:
+                response_text = json_match.group(1)
+
+            article_specs = json.loads(response_text)
+
+            # Handle case where response is wrapped in an object
+            if isinstance(article_specs, dict) and 'articles' in article_specs:
+                article_specs = article_specs['articles']
+
+            # Ensure we have a list
+            if not isinstance(article_specs, list):
+                raise ValueError(f"Expected list of articles, got {type(article_specs)}")
+
+            print(f"  AI identified {len(article_specs)} potential article(s)")
+
+            # Extract articles based on AI-identified boundaries
+            articles = []
+            for i, spec in enumerate(article_specs, 1):
+                # Handle both dict and non-dict items
+                if not isinstance(spec, dict):
+                    print(f"    [{i}] Skipping invalid spec: {spec}")
+                    continue
+
+                title = spec.get("title", "Untitled")
+                start_marker = spec.get("start_marker", "")
+                end_marker = spec.get("end_marker", "")
+
+                print(f"    [{i}] Extracting: {title[:60]}...")
+
+                article_content, page_start, page_end = self._extract_article_by_markers(
+                    content, start_marker, end_marker
+                )
+
+                if article_content:
+                    article = Article(title, article_content, page_start, page_end)
+                    articles.append(article)
+                    print(f"        ✓ Extracted {len(article_content):,} characters", end="")
+                    if page_start:
+                        print(f" (pages {page_start}-{page_end})")
+                    else:
+                        print()
+                else:
+                    print(f"        ✗ Failed to extract content")
+
+            elapsed = time.time() - start_time
+            print(f"  Article identification completed in {elapsed:.2f}s")
+
+            # If AI extraction failed or returned no articles, fallback
+            if not articles:
+                print("  AI segmentation returned no articles, using page-based fallback")
+                return self._extract_articles_by_page(content, document)
+
+            return articles
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            print(f"  Error in AI article extraction with Gemini after {elapsed:.2f}s: {e}")
             print("  Falling back to page-based segmentation")
             return self._extract_articles_by_page(content, document)
 
@@ -559,11 +712,13 @@ Respond with a JSON array of articles:
         return articles
 
     def process_with_ai(self, article: Article, document: Document) -> None:
-        """Use AI (Anthropic or Ollama) to generate summary, categories, and keywords."""
+        """Use AI (Anthropic, Ollama, or Gemini) to generate summary, categories, and keywords."""
         if self.model_provider == "anthropic":
             self._process_with_anthropic(article, document)
         elif self.model_provider == "ollama":
             self._process_with_ollama(article, document)
+        elif self.model_provider == "gemini":
+            self._process_with_gemini(article, document)
         else:
             # Fallback without AI
             article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
@@ -645,18 +800,11 @@ Respond in JSON format:
 }}"""
 
         try:
-            # Build kwargs for ollama.chat
-            chat_kwargs = {
-                'model': self.ollama_model,
-                'messages': [{'role': 'user', 'content': prompt}],
-                'format': 'json'
-            }
-
-            # Add host if specified
-            if self.ollama_host:
-                chat_kwargs['host'] = self.ollama_host
-
-            response = ollama.chat(**chat_kwargs)
+            response = ollama.chat(
+                model=self.model,
+                messages=[{'role': 'user', 'content': prompt}],
+                format='json'
+            )
 
             response_text = response['message']['content']
 
@@ -669,6 +817,79 @@ Respond in JSON format:
 
         except Exception as e:
             print(f"Error processing article '{article.title}' with Ollama: {e}")
+            # Fallback
+            article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
+            article.categories = ["uncategorized"]
+            article.keywords = []
+
+    def _process_with_gemini(self, article: Article, document: Document) -> None:
+        """Use Gemini API to generate summary, categories, and keywords."""
+        if not self.client:
+            # Fallback without AI
+            article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
+            article.categories = ["uncategorized"]
+            article.keywords = []
+            return
+
+        prompt = f"""Analyze the following article and provide:
+1. A concise summary (2-3 sentences)
+2. Relevant categories (e.g., events, observing reports, news, technical, etc.)
+3. Key keywords or topics
+
+Article Title: {article.title}
+Document: {document.title}
+
+Content:
+{article.content}
+
+Respond in JSON format:
+{{
+  "summary": "...",
+  "categories": ["category1", "category2"],
+  "keywords": ["keyword1", "keyword2", "keyword3"]
+}}"""
+
+        try:
+            # Try with JSON mode first
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config={
+                        'response_mime_type': 'application/json'
+                    }
+                )
+            except Exception as json_error:
+                # Check if it's a JSON mode not supported error
+                error_str = str(json_error)
+                if 'JSON mode is not enabled' in error_str or 'INVALID_ARGUMENT' in error_str:
+                    # Fall back to text mode (only print once per processor instance)
+                    if not hasattr(self, '_gemini_json_warning_shown'):
+                        print(f"  Note: JSON mode not supported by {self.model}, using text mode")
+                        self._gemini_json_warning_shown = True
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=prompt
+                    )
+                else:
+                    raise
+
+            response_text = response.text
+
+            # Extract JSON from markdown code blocks if present
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                response_text = json_match.group(1)
+
+            # Parse JSON response
+            result = json.loads(response_text)
+
+            article.summary = result.get("summary", "")
+            article.categories = result.get("categories", [])
+            article.keywords = result.get("keywords", [])
+
+        except Exception as e:
+            print(f"Error processing article '{article.title}' with Gemini: {e}")
             # Fallback
             article.summary = article.content[:200] + "..." if len(article.content) > 200 else article.content
             article.categories = ["uncategorized"]
@@ -709,22 +930,17 @@ Respond in JSON format:
 
     def _generate_embedding_ollama(self, article: Article) -> None:
         """Generate embedding using Ollama."""
-        embed_kwargs = {
-            'model': self.embedding_model,
-            'input': article.summary
-        }
-
-        if self.ollama_host:
-            embed_kwargs['host'] = self.ollama_host
-
-        response = ollama.embed(**embed_kwargs)
+        response = ollama.embed(
+            model=self.embedding_model,
+            input=article.summary
+        )
         article.embedding = response['embeddings'][0]
 
     def _generate_embedding_gemini(self, article: Article) -> None:
         """Generate embedding using Google Gemini API."""
         response = self.embedding_client.models.embed_content(
             model=self.embedding_model,
-            content=article.summary
+            contents=article.summary
         )
         article.embedding = response.embeddings[0].values
 
@@ -752,52 +968,62 @@ Respond in JSON format:
         # Find corresponding PDF
         document.pdf_path = document.find_pdf()
 
-    def process_document(self, txt_path: Path, root_dir: Path) -> Document:
+    def process_document(self, txt_path: Path, root_dir: Path, skip_summary: bool = False,
+                        skip_embeddings: bool = False, existing_json_path: Optional[Path] = None) -> Document:
         """Process a single document."""
-        print(f"\nProcessing: {txt_path}")
         doc_start_time = time.time()
 
-        document = Document(txt_path, root_dir)
+        # If skipping summary, load from existing JSON
+        if skip_summary and existing_json_path:
+            print(f"  Loading existing summary from: {existing_json_path}")
+            document = self.load_document_from_json(existing_json_path, txt_path, root_dir)
+            if not document:
+                print(f"  Failed to load existing JSON, processing from scratch")
+                skip_summary = False
 
-        # Read content
-        with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        # If not skipping summary or load failed, process normally
+        if not skip_summary:
+            document = Document(txt_path, root_dir)
 
-        # Extract document metadata
-        self.extract_document_metadata(content, document)
+            # Read content
+            with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
 
-        # Extract articles
-        extraction_start = time.time()
-        articles = self.extract_articles(content, document)
-        extraction_time = time.time() - extraction_start
-        print(f"  Total extraction time: {extraction_time:.2f}s")
+            # Extract document metadata
+            self.extract_document_metadata(content, document)
 
-        # Process each article with AI
-        print(f"\n  Generating summaries for {len(articles)} article(s)...")
-        summary_start = time.time()
-        for i, article in enumerate(articles, 1):
-            article_start = time.time()
-            print(f"  [{i}/{len(articles)}] {article.title[:60]}...", end=" ")
-            self.process_with_ai(article, document)
-            article_time = time.time() - article_start
-            print(f"({article_time:.2f}s)")
+            # Extract articles
+            extraction_start = time.time()
+            articles = self.extract_articles(content, document)
+            extraction_time = time.time() - extraction_start
+            print(f"  Total extraction time: {extraction_time:.2f}s")
 
-        summary_time = time.time() - summary_start
-        print(f"  Total summary generation time: {summary_time:.2f}s")
-
-        # Generate embeddings if enabled
-        if self.generate_embeddings:
-            print(f"\n  Generating embeddings for {len(articles)} article(s)...")
-            embedding_start = time.time()
+            # Process each article with AI
+            print(f"\n  Generating summaries for {len(articles)} article(s)...")
+            summary_start = time.time()
             for i, article in enumerate(articles, 1):
+                article_start = time.time()
                 print(f"  [{i}/{len(articles)}] {article.title[:60]}...", end=" ")
+                self.process_with_ai(article, document)
+                article_time = time.time() - article_start
+                print(f"({article_time:.2f}s)")
+
+            summary_time = time.time() - summary_start
+            print(f"  Total summary generation time: {summary_time:.2f}s")
+
+            document.articles = articles
+
+        # Generate embeddings if enabled and not skipping
+        if self.generate_embeddings and not skip_embeddings:
+            print(f"\n  Generating embeddings for {len(document.articles)} article(s)...")
+            embedding_start = time.time()
+            for i, article in enumerate(document.articles, 1):
+                print(f"  [{i}/{len(document.articles)}] {article.title[:60]}...", end=" ")
                 self.generate_embedding(article)
                 print("✓")
 
             embedding_time = time.time() - embedding_start
             print(f"  Total embedding generation time: {embedding_time:.2f}s")
-
-        document.articles = articles
 
         total_time = time.time() - doc_start_time
         print(f"  Document processing completed in {total_time:.2f}s")

@@ -44,10 +44,16 @@ There are two entry points:
 1. **Direct script** (for development/testing):
 ```bash
 # PREFERRED: Use Ollama with llama3.1 (free, local inference - no API costs!)
-. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama --ollama-model llama3.1
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama
+
+# With custom model
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama --model llama3.2
 
 # With embeddings (using Ollama - recommended for testing)
-. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama --ollama-model llama3.1 --generate-embeddings --embedding-provider ollama
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama --generate-embeddings --embedding-provider ollama
+
+# Use Gemini Flash 2.5 (fast and cheap)
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider gemini
 
 # Only use Anthropic when specifically testing Claude API features
 . .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider anthropic
@@ -56,13 +62,16 @@ There are two entry points:
 2. **Installed CLI** (after `pip install -e .`):
 ```bash
 # PREFERRED: Use Ollama
-. .venv/bin/activate && document-summarizer examples/pdfs --model-provider ollama --ollama-model llama3.1
+. .venv/bin/activate && document-summarizer examples/pdfs --model-provider ollama
+
+# Use Gemini
+. .venv/bin/activate && document-summarizer examples/pdfs --model-provider gemini
 
 # With embeddings (OpenAI)
-. .venv/bin/activate && document-summarizer examples/pdfs --model-provider ollama --ollama-model llama3.1 --generate-embeddings --embedding-provider openai
+. .venv/bin/activate && document-summarizer examples/pdfs --model-provider ollama --generate-embeddings --embedding-provider openai
 
 # Only use Anthropic when necessary
-. .venv/bin/activate && document-summarizer examples/pdfs
+. .venv/bin/activate && document-summarizer examples/pdfs --model-provider anthropic
 ```
 
 ### Testing
@@ -71,7 +80,10 @@ There are two entry points:
 . .venv/bin/activate && python test_basic.py
 
 # Test with a single document using Ollama (recommended for testing)
-. .venv/bin/activate && python summarize_documents.py examples/pdfs --pattern "Eph75_04.txt" --model-provider ollama --ollama-model llama3.1
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --pattern "Eph75_04.txt" --model-provider ollama
+
+# Test with Gemini
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --pattern "Eph75_04.txt" --model-provider gemini
 ```
 
 ## Architecture
@@ -104,8 +116,8 @@ The project uses a **single implementation** in the package to avoid duplication
 
 - **DocumentProcessor**: Main processing engine
   - Handles file discovery, article extraction, AI processing, and embedding generation
-  - Supports two model providers: Anthropic (`anthropic`) and Ollama (`ollama`)
-  - Supports three embedding providers: OpenAI, Anthropic (Voyage AI), and Ollama
+  - Supports three model providers: Anthropic (`anthropic`), Ollama (`ollama`), and Gemini (`gemini`)
+  - Supports four embedding providers: OpenAI, Anthropic (Voyage AI), Ollama, and Gemini
 
 ### Article Detection Logic
 
@@ -123,7 +135,7 @@ Articles are identified using a three-tier approach with automatic fallback:
    - Analyzes full document content to identify article boundaries
    - Understands context, topics, and natural section breaks
    - Avoids common pitfalls (e.g., numbered lists vs. headings)
-   - Works with both Anthropic Claude and Ollama models
+   - Works with Anthropic Claude, Ollama, and Gemini models
 
 3. **Fallback Method 2**: Page-based segmentation (when AI fails)
    - Splits by page markers: `[page 1]`, `Page 5`, `pg. 10`, `p. 3`, etc.
@@ -134,7 +146,7 @@ Articles are identified using a three-tier approach with automatic fallback:
 
 ### Model Provider Support
 
-Both implementations support two providers:
+Three providers are supported for summarization:
 
 - **Ollama** (RECOMMENDED for testing): Free local inference via `ollama` package
   - Default model: `llama3.1`
@@ -142,23 +154,34 @@ Both implementations support two providers:
   - Runs locally on your machine
   - Good for development and testing
 
-- **Anthropic** (production): Claude API via `anthropic` package
-  - Uses `claude-sonnet-4-20250514` model
-  - Requires API key (costs money)
-  - Better quality results
+- **Gemini** (fast and affordable): Google Gemini API via `google-genai` package
+  - Default model: `gemini-2.0-flash-exp` (Flash 2.5)
+  - Requires API key (low cost)
+  - Fast inference
+  - Good quality results
+
+- **Anthropic** (highest quality): Claude API via `anthropic` package
+  - Default model: `claude-sonnet-4-20250514`
+  - Requires API key (higher cost)
+  - Best quality results
   - Use for production or when you need highest quality
+
+All providers use a unified `--model` argument to specify the model name.
 
 Key methods:
 - `_extract_articles_from_markdown()`: Fast markdown header parsing (primary)
 - `_extract_articles_with_ai_anthropic()`: Uses Claude to segment documents (fallback 1)
 - `_extract_articles_with_ai_ollama()`: Uses Ollama to segment documents (fallback 1)
+- `_extract_articles_with_ai_gemini()`: Uses Gemini to segment documents (fallback 1)
 - `_extract_articles_by_page()`: Page-based segmentation (fallback 2)
 - `_process_with_anthropic()`: Calls Anthropic API for summaries
 - `_process_with_ollama()`: Calls Ollama API for summaries
+- `_process_with_gemini()`: Calls Gemini API for summaries
 - `generate_embedding()`: Generates embedding vector for article summary
 - `_generate_embedding_openai()`: OpenAI embeddings
 - `_generate_embedding_voyage()`: Anthropic/Voyage AI embeddings
 - `_generate_embedding_ollama()`: Ollama embeddings
+- `_generate_embedding_gemini()`: Gemini embeddings
 
 ### Page Marker Detection
 
@@ -170,9 +193,8 @@ Configure via `.env` file (see `.env.example`):
 
 ```bash
 ANTHROPIC_API_KEY=your_api_key_here  # For Anthropic provider (summaries & Voyage embeddings)
+GEMINI_API_KEY=your_gemini_key_here  # For Gemini provider (summaries & embeddings)
 OPENAI_API_KEY=your_openai_key_here  # For OpenAI embeddings
-GEMINI_API_KEY=your_gemini_key_here  # For Google Gemini embeddings
-OLLAMA_HOST=http://localhost:11434   # Optional, for custom Ollama host
 ```
 
 ## Embedding Generation
@@ -222,13 +244,16 @@ Four providers are supported:
 
 ```bash
 # Test with Ollama embeddings (free, local)
-. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama --ollama-model llama3.1 --generate-embeddings --embedding-provider ollama
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama --generate-embeddings --embedding-provider ollama
 
-# Production with OpenAI embeddings
+# Use Gemini for both summaries and embeddings
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider gemini --generate-embeddings --embedding-provider gemini
+
+# Production with Anthropic summaries and OpenAI embeddings
 . .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider anthropic --generate-embeddings --embedding-provider openai
 
 # Custom embedding model
-. .venv/bin/activate && python summarize_documents.py examples/pdfs --generate-embeddings --embedding-provider openai --embedding-model text-embedding-3-large
+. .venv/bin/activate && python summarize_documents.py examples/pdfs --model-provider ollama --generate-embeddings --embedding-provider openai --embedding-model text-embedding-3-large
 
 # Embeddings-only mode: Generate embeddings from existing JSON files
 . .venv/bin/activate && python summarize_documents.py examples/pdfs --embeddings-only --embedding-provider ollama

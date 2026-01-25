@@ -34,27 +34,17 @@ def main():
     )
     parser.add_argument(
         "--api-key",
-        help="Anthropic API key (or set ANTHROPIC_API_KEY env variable)"
-    )
-    parser.add_argument(
-        "--model",
-        default="claude-sonnet-4-20250514",
-        help="Claude model to use (default: claude-sonnet-4-20250514)"
+        help="API key for model provider (ANTHROPIC_API_KEY or GEMINI_API_KEY env variable)"
     )
     parser.add_argument(
         "--model-provider",
-        choices=["anthropic", "ollama"],
+        choices=["anthropic", "ollama", "gemini"],
         default="anthropic",
-        help="Model provider to use: 'anthropic' (default) or 'ollama' for local models"
+        help="Model provider: 'anthropic' (default), 'ollama' (local), or 'gemini'"
     )
     parser.add_argument(
-        "--ollama-model",
-        default="llama3.2",
-        help="Ollama model to use (default: llama3.2). Used only with --model-provider=ollama"
-    )
-    parser.add_argument(
-        "--ollama-host",
-        help="Ollama host URL (e.g., http://localhost:11434). Used only with --model-provider=ollama"
+        "--model",
+        help="Model name. Defaults: anthropic=claude-sonnet-4-20250514, ollama=llama3.1, gemini=gemini-2.0-flash-exp"
     )
     parser.add_argument(
         "--combined",
@@ -94,6 +84,11 @@ def main():
         "--gemini-api-key",
         help="Google Gemini API key for embeddings (or set GEMINI_API_KEY env variable)"
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force regeneration of existing summary and embedding files (default: skip existing files)"
+    )
 
     args = parser.parse_args()
 
@@ -111,21 +106,30 @@ def main():
     # Load environment variables
     load_dotenv()
 
-    # Get API key
-    api_key = args.api_key or os.getenv("ANTHROPIC_API_KEY")
-
-    # Check for required configuration based on provider
+    # Get API key based on provider
     if args.model_provider == "anthropic":
+        api_key = args.api_key or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             print("Warning: No Anthropic API key provided. Summaries will be basic excerpts.")
             print("Set ANTHROPIC_API_KEY environment variable or use --api-key option.")
-    elif args.model_provider == "ollama":
-        print(f"Using Ollama with model: {args.ollama_model}")
-        if args.ollama_host:
-            print(f"Ollama host: {args.ollama_host}")
+    elif args.model_provider == "gemini":
+        api_key = args.api_key or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("Warning: No Gemini API key provided. Summaries will be basic excerpts.")
+            print("Set GEMINI_API_KEY environment variable or use --api-key option.")
+    else:  # ollama
+        api_key = None
 
-    # Get Ollama configuration from environment if not provided
-    ollama_host = args.ollama_host or os.getenv("OLLAMA_HOST")
+    # Set default model based on provider if not specified
+    if not args.model:
+        if args.model_provider == "anthropic":
+            args.model = "claude-sonnet-4-20250514"
+        elif args.model_provider == "ollama":
+            args.model = "llama3.1"
+        elif args.model_provider == "gemini":
+            args.model = "gemini-2.5-flash"  # Gemini 2.5 Flash
+
+    print(f"Using {args.model_provider} with model: {args.model}")
 
     # Get API keys for embeddings
     openai_api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
@@ -159,8 +163,6 @@ def main():
         api_key=api_key,
         model=args.model,
         model_provider=args.model_provider,
-        ollama_model=args.ollama_model,
-        ollama_host=ollama_host,
         generate_embeddings=args.generate_embeddings,
         embedding_provider=args.embedding_provider,
         embedding_model=args.embedding_model,
@@ -192,6 +194,13 @@ def main():
         # Process each JSON file to generate embeddings
         processed_count = 0
         for json_path in json_files:
+            # Check if embeddings already exist (unless forcing)
+            embeddings_path = json_path.parent / f"{json_path.stem}-embeddings.json"
+            if embeddings_path.exists() and not args.force:
+                print(f"\nSkipping: {json_path} (embeddings already exist)")
+                processed_count += 1
+                continue
+
             result = processor.generate_embeddings_from_json(json_path)
             if result:
                 processed_count += 1
@@ -219,7 +228,45 @@ def main():
     # Process documents
     documents = []
     for txt_path in txt_files:
-        doc = processor.process_document(txt_path, directory)
+        # Determine output paths for checking existence
+        if output_dir:
+            json_path = output_dir / f"{txt_path.stem}.json"
+            embeddings_path = output_dir / f"{txt_path.stem}-embeddings.json"
+        else:
+            json_path = txt_path.with_suffix('.json')
+            embeddings_path = txt_path.parent / f"{txt_path.stem}-embeddings.json"
+
+        # Check if files already exist (only if not forcing regeneration)
+        summary_exists = json_path.exists() and not args.force
+        embeddings_exist = embeddings_path.exists() and args.generate_embeddings and not args.force
+
+        # Determine what needs to be processed
+        skip_summary = summary_exists
+        skip_embeddings = embeddings_exist
+
+        # If both exist, skip entirely
+        if skip_summary and (skip_embeddings or not args.generate_embeddings):
+            print(f"\nSkipping: {txt_path} (summary and embeddings already exist)")
+            # Still need to load the document for combined output
+            if args.combined:
+                doc = processor.load_document_from_json(json_path, txt_path, directory)
+                if doc:
+                    documents.append(doc)
+            continue
+
+        # Print status message
+        if skip_summary:
+            print(f"\nProcessing: {txt_path} (summary exists, generating embeddings only)")
+        elif skip_embeddings:
+            print(f"\nProcessing: {txt_path} (embeddings exist, generating summary only)")
+        else:
+            print(f"\nProcessing: {txt_path}")
+
+        # Process the document
+        doc = processor.process_document(txt_path, directory,
+                                         skip_summary=skip_summary,
+                                         skip_embeddings=skip_embeddings,
+                                         existing_json_path=json_path if skip_summary else None)
         documents.append(doc)
 
         # Save individual JSON unless combined output requested
