@@ -506,8 +506,12 @@ INCLUDE sections that are:
 - Program descriptions, meeting minutes, observing reports
 - Shorter but still meaningful content sections (100+ words with a clear topic)
 
-If a section was split by a page break (one section ends mid-sentence and the next begins
-mid-sentence or is clearly a continuation), MERGE them by listing both section indices together.
+MERGE sections when:
+- A section was split by a page break (one ends mid-sentence, the next continues)
+- Consecutive sections cover the same category or topic (e.g., multiple program descriptions,
+  multiple event listings, or a section and its obvious sub-sections that were promoted to
+  top-level headers by imperfect markdown conversion)
+- A section is clearly a sub-part of the preceding or following section
 
 Here are the sections:
 
@@ -516,11 +520,11 @@ Here are the sections:
 Respond with ONLY a JSON array. Each element represents one article to include:
 [
   {{"title": "Article Title", "sections": [3]}},
-  {{"title": "Article Title (merged)", "sections": [10, 11]}}
+  {{"title": "Descriptive Group Title", "sections": [5, 6, 7]}}
 ]
 
-Use the section's existing title unless merging, in which case use the title of the first
-substantial section. Only include sections worth summarizing."""
+Use the section's existing title for single sections. For merged sections, use a descriptive
+title that covers the group. Only include sections worth summarizing."""
 
         start_time = time.time()
         response_text = self._call_llm_for_classification(prompt)
