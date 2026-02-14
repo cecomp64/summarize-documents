@@ -5,6 +5,7 @@ Core document processing functionality.
 import re
 import json
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Optional
 from anthropic import Anthropic
@@ -50,6 +51,23 @@ class Article:
         """Generate article ID from document ID and title."""
         title_slug = re.sub(r'[^a-z0-9]+', '-', self.title.lower()).strip('-')
         return f"{document_id}-{title_slug}"
+
+
+@dataclass
+class Section:
+    """Represents a parsed markdown section (# header and its content)."""
+    index: int
+    title: str
+    start_line: int
+    end_line: int
+    content: str
+    word_count: int
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    has_byline: bool = False
+    byline_author: str = ""
+    preview: str = ""
+    sub_sections: list = field(default_factory=list)
 
 
 class Document:
@@ -151,6 +169,7 @@ class DocumentProcessor:
                 raise ValueError(f"Unknown embedding provider: {embedding_provider}")
 
         self.page_marker_pattern = re.compile(r'\[?(?:page|pg\.?|p\.?)\s*(\d+)\]?', re.IGNORECASE)
+        self.html_page_marker_pattern = re.compile(r'<!--\s*PAGE\s+(\d+)\s*-->', re.IGNORECASE)
 
     def find_files(self, directory: Path, pattern: str = "*.txt") -> List[Path]:
         """Find all files matching the pattern recursively."""
@@ -279,46 +298,387 @@ class DocumentProcessor:
 
         return articles
 
-    def _extract_articles_from_markdown(self, content: str, document: Document) -> List[Article]:
-        """Extract articles based on markdown headers (# and ##)."""
-        articles = []
+    def _find_page_numbers(self, text: str) -> List[int]:
+        """Find all page numbers in text using all known page marker patterns."""
+        page_numbers = []
+        for match in self.page_marker_pattern.finditer(text):
+            page_numbers.append(int(match.group(1)))
+        for match in self.html_page_marker_pattern.finditer(text):
+            page_numbers.append(int(match.group(1)))
+        return sorted(set(page_numbers))
+
+    def _parse_markdown_sections(self, content: str) -> List[Section]:
+        """Parse markdown content into top-level sections split at # headers."""
         lines = content.split('\n')
 
-        # Find all markdown headers (# or ##) that look like article titles
-        header_positions = []
+        # Find all # headers (top-level only) -- these define section boundaries
+        # Also track ## headers to record as sub-sections
+        h1_positions = []  # (line_index, title)
+        h2_by_range = {}   # will map h1 index -> list of ## titles
+
         for i, line in enumerate(lines):
-            # Match markdown headers: # Title or ## Title
-            if re.match(r'^#{1,2}\s+\*?\*?[A-Z]', line):
-                # Extract title by removing markdown syntax
-                title = re.sub(r'^#{1,2}\s+', '', line).strip()
-                title = re.sub(r'\*\*|\*', '', title)  # Remove bold markers
-                header_positions.append((i, title))
+            h1_match = re.match(r'^#\s+(.+)', line)
+            if h1_match and not re.match(r'^##', line):
+                title = h1_match.group(1).strip()
+                title = re.sub(r'\*\*|\*', '', title)  # Remove bold/italic
+                h1_positions.append((i, title))
 
-        # If we found headers, split content by them
-        if len(header_positions) >= 2:  # Need at least 2 to make meaningful articles
-            for idx in range(len(header_positions)):
-                start_line, title = header_positions[idx]
+        if not h1_positions:
+            return []
 
-                # Determine end line
-                if idx + 1 < len(header_positions):
-                    end_line = header_positions[idx + 1][0]
+        # Build sections from h1 positions
+        sections = []
+        for idx in range(len(h1_positions)):
+            start_line, title = h1_positions[idx]
+            end_line = h1_positions[idx + 1][0] if idx + 1 < len(h1_positions) else len(lines)
+
+            section_lines = lines[start_line:end_line]
+            section_content = '\n'.join(section_lines).strip()
+
+            # Find ## sub-sections within this section
+            sub_sections = []
+            for line in section_lines[1:]:  # skip the # header itself
+                h2_match = re.match(r'^##\s+(.+)', line)
+                if h2_match:
+                    sub_title = h2_match.group(1).strip()
+                    sub_title = re.sub(r'\*\*|\*', '', sub_title)
+                    sub_sections.append(sub_title)
+
+            # Compute word count from body (excluding header, images, tables, comments)
+            body_lines = section_lines[1:]
+            body_text = ' '.join(body_lines)
+            body_clean = re.sub(r'!\[.*?\]\(.*?\)', '', body_text)   # images
+            body_clean = re.sub(r'\[.*?\]\(.*?\)', '', body_clean)   # links
+            body_clean = re.sub(r'[|]', ' ', body_clean)             # table separators
+            body_clean = re.sub(r'---+', '', body_clean)             # horizontal rules
+            body_clean = re.sub(r'<!--.*?-->', '', body_clean)       # HTML comments
+            body_clean = re.sub(r'#{1,3}\s*', '', body_clean)        # sub-headers
+            word_count = len(body_clean.split())
+
+            # Find page numbers
+            page_numbers = self._find_page_numbers(section_content)
+            page_start = min(page_numbers) if page_numbers else None
+            page_end = max(page_numbers) if page_numbers else None
+
+            # Detect author byline
+            has_byline = False
+            byline_author = ""
+            byline_match = re.search(
+                r'(?:\*\*)?[Bb]y\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+                section_content[:500]
+            )
+            if byline_match:
+                has_byline = True
+                byline_author = byline_match.group(1)
+
+            # Build preview (first ~150 chars of prose content)
+            preview = ""
+            for line in body_lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith('!['):  continue     # image
+                if stripped.startswith('|'):   continue     # table
+                if stripped.startswith('---'): continue     # HR
+                if stripped.startswith('<!--'): continue    # HTML comment
+                if stripped.startswith('```'): continue     # code block
+                if stripped.startswith('##'):  continue     # sub-header
+                if re.match(r'^\*?\*?The Ephemeris', stripped): continue  # footer
+                clean = re.sub(r'\*\*|\*|#{1,3}\s*', '', stripped)
+                if clean and len(clean) > 10:
+                    preview = clean[:150]
+                    if len(clean) > 150:
+                        preview += "..."
+                    break
+
+            sections.append(Section(
+                index=idx,
+                title=title,
+                start_line=start_line,
+                end_line=end_line,
+                content=section_content,
+                word_count=word_count,
+                page_start=page_start,
+                page_end=page_end,
+                has_byline=has_byline,
+                byline_author=byline_author,
+                preview=preview,
+                sub_sections=sub_sections,
+            ))
+
+        return sections
+
+    def _call_llm_for_classification(self, prompt: str) -> str:
+        """Send a classification prompt to the configured LLM and return the response text."""
+        if self.model_provider == "anthropic":
+            if not self.client:
+                raise RuntimeError("No Anthropic client available")
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.content[0].text
+
+        elif self.model_provider == "ollama":
+            response = ollama.chat(
+                model=self.model,
+                messages=[{'role': 'user', 'content': prompt}],
+                format='json'
+            )
+            return response['message']['content']
+
+        elif self.model_provider == "gemini":
+            if not self.client:
+                raise RuntimeError("No Gemini client available")
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+            except Exception as e:
+                if 'JSON mode is not enabled' in str(e) or 'INVALID_ARGUMENT' in str(e):
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=prompt
+                    )
                 else:
-                    end_line = len(lines)
+                    raise
+            return response.text
 
-                # Extract article content
-                article_lines = lines[start_line:end_line]
-                article_content = '\n'.join(article_lines).strip()
+        else:
+            raise ValueError(f"Unknown model provider: {self.model_provider}")
 
-                # Extract page numbers from content
-                page_numbers = []
-                for match in self.page_marker_pattern.finditer(article_content):
-                    page_num = int(match.group(1))
-                    page_numbers.append(page_num)
+    def _format_section_summary(self, section: Section) -> str:
+        """Format a section for the LLM classification prompt."""
+        parts = [f'Section {section.index}: "{section.title}" ({section.word_count} words']
 
-                page_start = min(page_numbers) if page_numbers else None
-                page_end = max(page_numbers) if page_numbers else None
+        if section.page_start is not None:
+            if section.page_start == section.page_end or section.page_end is None:
+                parts[0] += f', page {section.page_start}'
+            else:
+                parts[0] += f', pages {section.page_start}-{section.page_end}'
 
-                articles.append(Article(title, article_content, page_start, page_end))
+        if section.has_byline:
+            parts[0] += f', byline: {section.byline_author}'
+
+        parts[0] += ')'
+
+        if section.sub_sections:
+            sub_str = ', '.join(f'"{s}"' for s in section.sub_sections[:5])
+            if len(section.sub_sections) > 5:
+                sub_str += f', ... (+{len(section.sub_sections) - 5} more)'
+            parts.append(f'  Sub-sections: {sub_str}')
+
+        if section.preview:
+            parts.append(f'  Preview: "{section.preview}"')
+
+        return '\n'.join(parts)
+
+    def _classify_sections_with_llm(self, sections: List[Section]) -> List[Dict]:
+        """Send compact section metadata to LLM for article classification."""
+        # Build section summaries
+        section_summaries = '\n\n'.join(
+            self._format_section_summary(s) for s in sections
+        )
+
+        prompt = f"""You are analyzing a newsletter/document that has been converted from PDF to markdown.
+The document has been split into sections at each top-level markdown header (#).
+The markdown conversion may be imperfect -- headers might be misleveled or content may be split awkwardly.
+
+Your task: identify which sections are substantive ARTICLES worth summarizing and which should be EXCLUDED.
+
+EXCLUDE sections that are:
+- Title pages, mastheads, or cover pages
+- Tables of contents ("Inside This Issue" or similar)
+- Contact lists or directories
+- Event calendars or schedules
+- Membership forms or applications
+- Page footers or page number markers
+- Cover teasers (title + "Page N" with little real content)
+- Image-only pages with no prose
+- Short fragments that are clearly continuations of another section
+
+INCLUDE sections that are:
+- Articles with substantial prose (typically 200+ words)
+- Columns, reports, or features with a clear topic
+- Program descriptions, meeting minutes, observing reports
+- Shorter but still meaningful content sections (100+ words with a clear topic)
+
+If a section was split by a page break (one section ends mid-sentence and the next begins
+mid-sentence or is clearly a continuation), MERGE them by listing both section indices together.
+
+Here are the sections:
+
+{section_summaries}
+
+Respond with ONLY a JSON array. Each element represents one article to include:
+[
+  {{"title": "Article Title", "sections": [3]}},
+  {{"title": "Article Title (merged)", "sections": [10, 11]}}
+]
+
+Use the section's existing title unless merging, in which case use the title of the first
+substantial section. Only include sections worth summarizing."""
+
+        start_time = time.time()
+        response_text = self._call_llm_for_classification(prompt)
+        api_time = time.time() - start_time
+        print(f"  LLM classification API call completed in {api_time:.2f}s")
+
+        # Extract JSON from markdown code blocks if present
+        json_match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', response_text, re.DOTALL)
+        if json_match:
+            response_text = json_match.group(1)
+
+        classification = json.loads(response_text)
+
+        # Handle wrapped response
+        if isinstance(classification, dict) and 'articles' in classification:
+            classification = classification['articles']
+
+        if not isinstance(classification, list):
+            raise ValueError(f"Expected list, got {type(classification)}")
+
+        # Validate section indices
+        max_idx = len(sections) - 1
+        valid_classification = []
+        for spec in classification:
+            if not isinstance(spec, dict):
+                continue
+            title = spec.get("title", "Untitled")
+            section_indices = spec.get("sections", [])
+            if not isinstance(section_indices, list):
+                section_indices = [section_indices]
+            valid_indices = [i for i in section_indices if isinstance(i, int) and 0 <= i <= max_idx]
+            if valid_indices:
+                valid_classification.append({"title": title, "sections": valid_indices})
+
+        return valid_classification
+
+    def _classify_sections_heuristic(self, sections: List[Section]) -> List[Dict]:
+        """Classify sections using heuristic rules when LLM is unavailable."""
+        EXCLUDE_TITLE_PATTERNS = [
+            r'^the\s+ephemeris$',
+            r'^inside\s+this\s+issue$',
+            r'^(sjaa\s+)?contacts?$',
+            r'^calendar$',
+            r'^san\s+jose\s+astronomical\s+association\s+annual\s+membership',
+            r'^(new\s+membership|membership\s+type)',
+        ]
+
+        MIN_WORD_COUNT = 50
+
+        results = []
+
+        for section in sections:
+            title_lower = section.title.lower().strip()
+
+            # Check exclusion patterns
+            excluded = any(
+                re.match(pattern, title_lower)
+                for pattern in EXCLUDE_TITLE_PATTERNS
+            )
+            if excluded:
+                continue
+
+            # Skip sections that are too short
+            if section.word_count < MIN_WORD_COUNT:
+                continue
+
+            # Check for page-break continuations (title starts lowercase)
+            if section.title and section.title[0].islower() and results:
+                last = results[-1]
+                if last['sections'][-1] == section.index - 1:
+                    last['sections'].append(section.index)
+                    continue
+
+            results.append({
+                "title": section.title,
+                "sections": [section.index]
+            })
+
+        return results
+
+    def _build_articles_from_sections(self, sections: List[Section],
+                                       classification: List[Dict]) -> List[Article]:
+        """Build Article objects from classified section groups."""
+        articles = []
+
+        for spec in classification:
+            title = spec["title"]
+            section_indices = spec["sections"]
+
+            valid_indices = [i for i in section_indices if 0 <= i < len(sections)]
+            if not valid_indices:
+                continue
+
+            # Merge content from all sections in this group
+            merged_parts = []
+            all_page_numbers = []
+
+            for idx in valid_indices:
+                section = sections[idx]
+                merged_parts.append(section.content)
+                if section.page_start is not None:
+                    all_page_numbers.append(section.page_start)
+                if section.page_end is not None:
+                    all_page_numbers.append(section.page_end)
+
+            merged_content = '\n\n'.join(merged_parts).strip()
+            page_start = min(all_page_numbers) if all_page_numbers else None
+            page_end = max(all_page_numbers) if all_page_numbers else None
+
+            articles.append(Article(title, merged_content, page_start, page_end))
+
+        return articles
+
+    def _extract_articles_from_markdown(self, content: str, document: Document) -> List[Article]:
+        """Extract articles using structural parsing + LLM classification."""
+        # Phase 1: Parse into sections by # headers
+        sections = self._parse_markdown_sections(content)
+
+        if len(sections) < 2:
+            return []  # Not enough structure, fall through to AI/page fallback
+
+        print(f"  Parsed {len(sections)} top-level sections from markdown")
+
+        # Phase 2: Classify sections
+        classification = None
+
+        llm_available = (
+            (self.model_provider == "anthropic" and self.client) or
+            self.model_provider == "ollama" or
+            (self.model_provider == "gemini" and self.client)
+        )
+
+        if llm_available:
+            try:
+                print("  Using LLM to classify sections...")
+                start_time = time.time()
+                classification = self._classify_sections_with_llm(sections)
+                elapsed = time.time() - start_time
+                print(f"  LLM classification completed in {elapsed:.2f}s")
+                print(f"  LLM identified {len(classification)} article(s)")
+            except Exception as e:
+                print(f"  LLM classification failed: {e}")
+                classification = None
+
+        if classification is None:
+            print("  Using heuristic classification...")
+            classification = self._classify_sections_heuristic(sections)
+            print(f"  Heuristic identified {len(classification)} article(s)")
+
+        # Phase 3: Build articles from classification
+        articles = self._build_articles_from_sections(sections, classification)
+
+        # Log the identified articles
+        for i, article in enumerate(articles, 1):
+            pages = ""
+            if article.page_start:
+                pages = f" (pages {article.page_start}-{article.page_end})"
+            print(f"    [{i}] {article.title[:70]}{pages}")
 
         return articles
 

@@ -1,19 +1,19 @@
 # Document Summarization Tool
 
-A Python tool that processes text files to extract articles, generate AI-powered summaries, and create structured JSON output with metadata.
+A Python tool that processes text files to extract articles, generate AI-powered summaries, and create structured JSON output with metadata. Supports multiple AI providers (Anthropic Claude, Google Gemini, Ollama) and optional vector embedding generation.
 
 ## Features
 
+- **Multi-provider AI support** - Choose between Anthropic Claude, Google Gemini, or Ollama (local) for summarization
+- **Multi-tier article detection** - Markdown headers, AI-based semantic analysis, and page-based segmentation with automatic fallback
 - **Recursive file discovery** with configurable glob patterns (default: `*.txt`)
-- **Article extraction** - Automatically splits documents into sections/articles based on headers
-- **Page tracking** - Detects and tracks page markers within documents
-- **AI-powered processing** - Uses Claude API to generate:
-  - Concise summaries
-  - Relevant categories
-  - Key keywords
+- **AI-powered processing** - Generates concise summaries, categories, and keywords for each article
+- **Vector embedding generation** - Optional embeddings via OpenAI, Gemini, Ollama, or Voyage AI for semantic search
+- **Embeddings-only mode** - Generate embeddings from existing JSON summary files without reprocessing
+- **Incremental processing** - Skips already-processed files unless `--force` is used
 - **PDF linking** - Automatically finds and links corresponding PDF files
-- **Document metadata** - Extracts titles, dates, and other metadata
-- **Flexible output** - Generate individual JSON files per document or a combined output
+- **Flexible output** - Individual JSON files per document, combined output, or custom output directory
+- **Detailed timing** - Performance metrics for API calls, extraction, summarization, and embedding generation
 
 ## Installation
 
@@ -38,75 +38,199 @@ cd /path/to/document-summarizer
 pip install .
 ```
 
-### Setting up the API key
+## Configuration
 
-Set up your Anthropic API key (optional, but required for AI-powered summaries):
+### API Keys
 
-```bash
-export ANTHROPIC_API_KEY=your_api_key_here
-```
-
-Or create a `.env` file in your working directory:
+Set up API keys for your chosen provider(s). You can use environment variables or a `.env` file:
 
 ```bash
 cp .env.example .env
-# Edit .env and add: ANTHROPIC_API_KEY=your_key_here
 ```
+
+| Variable | Required for |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic Claude summaries, Voyage AI embeddings |
+| `GEMINI_API_KEY` | Google Gemini summaries and embeddings |
+| `OPENAI_API_KEY` | OpenAI embeddings |
+
+Ollama requires no API key -- it runs locally.
 
 ## Usage
 
-Once installed, you can use the `document-summarizer` command from anywhere:
+Once installed, use the `document-summarizer` command (or run `python summarize_documents.py` directly).
 
 ### Basic usage
 
-Process all `.txt` files in a directory:
+Process all `.txt` files using the default provider (Anthropic):
 
 ```bash
 document-summarizer /path/to/documents
 ```
 
-### Custom file pattern
+### Choose a model provider
 
-Process files matching a specific pattern:
+```bash
+# Ollama - free, local inference (recommended for testing)
+document-summarizer /path/to/documents --model-provider ollama
+
+# Google Gemini - fast and affordable
+document-summarizer /path/to/documents --model-provider gemini
+
+# Anthropic Claude - highest quality (default)
+document-summarizer /path/to/documents --model-provider anthropic
+```
+
+### Custom model
+
+Override the default model for any provider:
+
+```bash
+document-summarizer /path/to/documents --model-provider ollama --model llama3.2
+document-summarizer /path/to/documents --model-provider gemini --model gemini-2.5-pro
+document-summarizer /path/to/documents --model-provider anthropic --model claude-sonnet-4-20250514
+```
+
+### Custom file pattern
 
 ```bash
 document-summarizer /path/to/documents --pattern "*.md"
+document-summarizer /path/to/documents --pattern "Eph*.txt"
 ```
 
-### Combined output
-
-Generate a single JSON file for all documents:
+### Output options
 
 ```bash
-document-summarizer /path/to/documents --combined --output output.json
+# Individual JSON files next to each source file (default)
+document-summarizer /path/to/documents
+
+# Individual JSON files in a custom output directory
+document-summarizer /path/to/documents --output /path/to/output
+
+# Single combined JSON file
+document-summarizer /path/to/documents --combined --output combined.json
 ```
 
-### Command-line options
+### With embeddings
+
+```bash
+# Ollama embeddings (free, local)
+document-summarizer /path/to/documents --model-provider ollama --generate-embeddings --embedding-provider ollama
+
+# Gemini for both summaries and embeddings
+document-summarizer /path/to/documents --model-provider gemini --generate-embeddings --embedding-provider gemini
+
+# OpenAI embeddings (default embedding provider)
+document-summarizer /path/to/documents --generate-embeddings --embedding-provider openai
+
+# Custom embedding model and dimensions
+document-summarizer /path/to/documents --generate-embeddings --embedding-provider gemini --embedding-model gemini-embedding-001 --embedding-dimensions 512
+```
+
+### Embeddings-only mode
+
+Generate embeddings from existing JSON summary files without reprocessing:
+
+```bash
+# Generate embeddings for all existing JSON files
+document-summarizer /path/to/documents --embeddings-only --embedding-provider ollama
+
+# Generate embeddings for a specific file
+document-summarizer /path/to/documents --pattern "Eph75_04.json" --embeddings-only --embedding-provider gemini
+```
+
+### Force regeneration
+
+By default, existing summary and embedding files are skipped. Use `--force` to regenerate:
+
+```bash
+document-summarizer /path/to/documents --force
+document-summarizer /path/to/documents --embeddings-only --embedding-provider ollama --force
+```
+
+## Command-Line Reference
 
 ```
 usage: document-summarizer [-h] [--version] [--pattern PATTERN]
-                           [--api-key API_KEY] [--model MODEL] [--combined]
-                           [--output OUTPUT] [directory]
-
-positional arguments:
-  directory            Directory to search for text files
-
-optional arguments:
-  -h, --help           Show this help message and exit
-  --version            Show version and exit
-  --pattern PATTERN    Glob pattern for files to process (default: *.txt)
-  --api-key API_KEY    Anthropic API key (or set ANTHROPIC_API_KEY env variable)
-  --model MODEL        Claude model to use (default: claude-sonnet-4-20250514)
-  --combined           Create a single combined JSON file instead of one per document
-  --output OUTPUT      Output path for combined JSON (used with --combined)
+                           [--api-key API_KEY]
+                           [--model-provider {anthropic,ollama,gemini}]
+                           [--model MODEL] [--combined] [--output OUTPUT]
+                           [--generate-embeddings]
+                           [--embeddings-only]
+                           [--embedding-provider {openai,anthropic,ollama,gemini}]
+                           [--embedding-model EMBEDDING_MODEL]
+                           [--embedding-dimensions EMBEDDING_DIMENSIONS]
+                           [--openai-api-key OPENAI_API_KEY]
+                           [--gemini-api-key GEMINI_API_KEY]
+                           [--force]
+                           [directory]
 ```
+
+| Argument | Description |
+|---|---|
+| `directory` | Directory to search for text files |
+| `--version` | Show version and exit |
+| `--pattern PATTERN` | Glob pattern for files to process (default: `*.txt`) |
+| `--api-key API_KEY` | API key for model provider (or use env variables) |
+| `--model-provider` | Model provider: `anthropic` (default), `ollama`, or `gemini` |
+| `--model MODEL` | Model name (defaults: anthropic=`claude-sonnet-4-20250514`, ollama=`llama3.1`, gemini=`gemini-2.5-flash`) |
+| `--combined` | Create a single combined JSON file instead of one per document |
+| `--output OUTPUT` | Output path. With `--combined`: path to combined JSON file. Without: directory for individual JSON files |
+| `--generate-embeddings` | Enable embedding generation for article summaries |
+| `--embeddings-only` | Only generate embeddings from existing JSON files (skips summarization) |
+| `--embedding-provider` | Embedding provider: `openai` (default), `anthropic` (Voyage AI), `ollama`, or `gemini` |
+| `--embedding-model MODEL` | Override default embedding model (defaults: openai=`text-embedding-3-small`, anthropic=`voyage-3`, ollama=`embeddinggemma`, gemini=`gemini-embedding-001`) |
+| `--embedding-dimensions N` | Output dimensionality for embeddings (default: 768). Supported by Gemini provider |
+| `--openai-api-key KEY` | OpenAI API key for embeddings (or use `OPENAI_API_KEY` env var) |
+| `--gemini-api-key KEY` | Gemini API key (or use `GEMINI_API_KEY` env var) |
+| `--force` | Force regeneration of existing summary and embedding files |
+
+## Model Providers
+
+### Summarization
+
+| Provider | Default Model | API Key | Notes |
+|---|---|---|---|
+| **Ollama** | `llama3.1` | None (local) | Free, runs locally. Best for development/testing |
+| **Gemini** | `gemini-2.5-flash` | `GEMINI_API_KEY` | Fast, affordable. Good quality |
+| **Anthropic** | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` | Highest quality. Best for production |
+
+### Embeddings
+
+| Provider | Default Model | Dimensions | API Key |
+|---|---|---|---|
+| **OpenAI** | `text-embedding-3-small` | 1536 | `OPENAI_API_KEY` |
+| **Ollama** | `embeddinggemma` | 768 | None (local) |
+| **Gemini** | `gemini-embedding-001` | 768 (configurable) | `GEMINI_API_KEY` |
+| **Anthropic/Voyage AI** | `voyage-3` | varies | `ANTHROPIC_API_KEY` |
+
+## Article Detection
+
+Articles are identified using a three-tier approach with automatic fallback:
+
+1. **Markdown header parsing** (primary) - Detects `#` and `##` headers followed by capitalized text. Instant, no API calls.
+2. **AI-based semantic analysis** (fallback) - Analyzes full document content to identify article boundaries using the configured model provider.
+3. **Page-based segmentation** (last resort) - Splits by page markers (`[page 1]`, `Page 5`, `pg. 10`, `p. 3`, etc.). Creates one article per page.
+
+A minimum length filter (100 characters) removes trivially short articles after extraction.
 
 ## Output Format
 
-The tool generates JSON files with the following schema:
+### Summary JSON
+
+Generated next to each input file (e.g., `Eph75_04.txt` -> `Eph75_04.json`) or as combined output:
 
 ```json
 {
+  "documents": [
+    {
+      "id": "eph-1975-04",
+      "title": "SAN JOSE AMATEUR ASTRONOMERS BULLETIN",
+      "issueDate": "1975-04-01",
+      "pdfPath": "pdfs/Eph75_04.pdf",
+      "txtPath": "pdfs/Eph75_04.txt"
+    }
+  ],
   "articles": [
     {
       "id": "eph-1975-04-01-rec-activities",
@@ -118,138 +242,31 @@ The tool generates JSON files with the following schema:
       "pageStart": 1,
       "pageEnd": 1
     }
-  ],
-  "documents": [
+  ]
+}
+```
+
+### Embeddings JSON
+
+When `--generate-embeddings` is enabled, embeddings are saved to a **separate file** (e.g., `Eph75_04-embeddings.json`):
+
+```json
+{
+  "embeddings": [
     {
-      "id": "eph-1975-04",
-      "title": "SAN JOSE AMATEUR ASTRONOMERS BULLETIN",
-      "issueDate": "1975-04-01",
-      "pdfPath": "pdfs/Eph75_04.pdf",
-      "txtPath": "pdfs/Eph75_04.txt"
+      "articleId": "eph-1975-04-01-rec-activities",
+      "vector": [0.0123, -0.0876, 0.2345, "..."]
     }
   ]
 }
 ```
 
-### Field Descriptions
-
-**Articles:**
-- `id` - Unique identifier derived from document ID and article title
-- `documentId` - Reference to parent document
-- `title` - Article title (extracted from section headers)
-- `summary` - AI-generated summary (2-3 sentences)
-- `categories` - AI-assigned categories
-- `keywords` - AI-extracted keywords
-- `pageStart` / `pageEnd` - Page numbers (if page markers found)
-
-**Documents:**
-- `id` - Unique identifier derived from filename
-- `title` - Document title (extracted from content)
-- `issueDate` - Publication date (extracted from filename or content)
-- `pdfPath` - Relative path to corresponding PDF file (if found)
-- `txtPath` - Relative path to source text file
-
-## Article Detection
-
-The tool automatically detects article boundaries using these heuristics:
-
-1. **All-caps headers** - Lines in all capital letters with 2+ words
-2. **Numbered sections** - Lines starting with "1.", "I.", "(a)", etc.
-3. **Custom patterns** - Can be extended in the `_is_section_header()` method
-
-## Page Marker Detection
-
-The tool recognizes various page marker formats:
-
-- `[page 1]`
-- `[Page 5]`
-- `pg. 10`
-- `p. 3`
-- `Page 15`
-
-## PDF Detection
-
-The tool automatically looks for PDF files with the same base name as each text file. For example:
-- Text file: `documents/Eph75_04.txt`
-- PDF file: `documents/Eph75_04.pdf`
-
-PDF paths are stored as relative paths from the input root directory.
-
 ## Working Without an API Key
 
-If no API key is provided, the tool will still process documents but with basic functionality:
+If no API key is provided, the tool will still process documents with basic functionality:
 - Summaries will be simple excerpts (first 200 characters)
 - Categories will be set to `["uncategorized"]`
 - Keywords will be empty
-
-## Examples
-
-### Example 1: Process astronomy bulletins
-
-```bash
-document-summarizer ./astronomy-docs --pattern "Eph*.txt"
-```
-
-### Example 2: Process all markdown files with combined output
-
-```bash
-document-summarizer ./articles --pattern "*.md" --combined --output all_articles.json
-```
-
-### Example 3: Process with explicit API key
-
-```bash
-document-summarizer ./documents --api-key sk-ant-xxxxx
-```
-
-### Example 4: Use a different Claude model
-
-```bash
-document-summarizer ./documents --model claude-3-5-haiku-20241022
-```
-
-## Customization
-
-### Adjusting Article Detection
-
-Edit the `_is_section_header()` method in [src/document_summarizer/processor.py](src/document_summarizer/processor.py) to customize how section headers are detected based on your document structure.
-
-### Customizing AI Processing
-
-Edit the `process_with_ai()` method to adjust:
-- The prompt sent to Claude
-- The model used (`claude-sonnet-4-20250514` by default)
-- Token limits
-- Output format
-
-### Page Marker Patterns
-
-Modify the `page_marker_pattern` regex in the `DocumentProcessor.__init__()` method to recognize different page marker formats.
-
-## Using as a Python Library
-
-You can also use the tool programmatically in your Python code:
-
-```python
-from document_summarizer import DocumentProcessor
-from pathlib import Path
-
-# Initialize processor
-processor = DocumentProcessor(api_key="your-api-key")
-
-# Process documents
-root_dir = Path("/path/to/documents")
-txt_files = processor.find_files(root_dir, "*.txt")
-
-documents = []
-for txt_path in txt_files:
-    doc = processor.process_document(txt_path, root_dir)
-    documents.append(doc)
-
-# Generate output
-output = processor.generate_output(documents)
-print(output)
-```
 
 ## Project Structure
 
@@ -259,24 +276,30 @@ document-summarizer/
 │   └── document_summarizer/
 │       ├── __init__.py          # Package initialization
 │       ├── processor.py         # Core processing logic
-│       └── cli.py              # Command-line interface
+│       └── cli.py               # Command-line interface
+├── summarize_documents.py       # Thin wrapper for direct execution
 ├── examples/
-│   └── pdfs/                   # Example files
-├── pyproject.toml              # Package configuration
-├── setup.py                    # Setup script
-├── requirements.txt            # Python dependencies
-├── .env.example               # Environment variable template
-├── .gitignore                 # Git ignore rules
-├── LICENSE                    # MIT License
-├── README.md                  # This file
-└── QUICKSTART.md             # Quick start guide
+│   └── pdfs/                    # Example files
+├── pyproject.toml               # Package configuration
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Environment variable template
+├── .gitignore                   # Git ignore rules
+├── LICENSE                      # MIT License
+├── CLAUDE.md                    # Claude Code instructions
+└── README.md                    # This file
 ```
+
+The main script (`summarize_documents.py`) is a thin wrapper that imports from the package. All logic lives in `src/document_summarizer/`.
 
 ## Requirements
 
 - Python 3.9+
-- `anthropic` - Claude API client
-- `python-dotenv` - Environment variable management
+- `anthropic>=0.40.0` - Claude API client
+- `python-dotenv>=1.0.0` - Environment variable management
+- `ollama>=0.4.0` - Ollama local model client
+- `openai>=1.0.0` - OpenAI API client (for embeddings)
+- `google-genai>=1.0.0` - Google Gemini client (optional)
+- `voyageai>=0.2.0` - Voyage AI client (optional, for Anthropic embeddings)
 
 ## License
 
@@ -285,7 +308,3 @@ MIT License - Feel free to use and modify as needed.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## Support
-
-For issues or questions, please open an issue on the GitHub repository.

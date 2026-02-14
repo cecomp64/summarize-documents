@@ -125,20 +125,22 @@ The project uses a **single implementation** in the package to avoid duplication
 
 Articles are identified using a three-tier approach with automatic fallback:
 
-1. **Primary Method**: Markdown header parsing (fastest, most accurate)
-   - Detects markdown headers (`#` and `##`) followed by capitalized text
-   - Instant processing with no API calls
-   - Perfect for documents with markdown structure
-   - Example: `# Comet Comments` or `## by Author Name`
+1. **Primary Method**: Structural parsing + LLM classification
+   - Parses `#` headers into candidate sections with metadata (word count, page range, byline, preview)
+   - `##` headers are kept as sub-sections within their parent `#` section
+   - LLM classifies which sections are real articles vs. non-content (TOC, contacts, calendars, forms, footers)
+   - LLM can merge sections split by page breaks (continuation fragments)
+   - Token-efficient: sends section metadata (~2,500 tokens) instead of full document (~22,000 tokens)
+   - Heuristic fallback when LLM is unavailable (filters by word count, title patterns, continuation detection)
 
-2. **Fallback Method 1**: AI-based semantic analysis (when no markdown found)
+2. **Fallback Method 1**: AI-based semantic analysis (when no markdown headers found)
    - Analyzes full document content to identify article boundaries
    - Understands context, topics, and natural section breaks
    - Avoids common pitfalls (e.g., numbered lists vs. headings)
    - Works with Anthropic Claude, Ollama, and Gemini models
 
 3. **Fallback Method 2**: Page-based segmentation (when AI fails)
-   - Splits by page markers: `[page 1]`, `Page 5`, `pg. 10`, `p. 3`, etc.
+   - Splits by page markers: `[page 1]`, `Page 5`, `pg. 10`, `p. 3`, `<!-- PAGE N -->`, etc.
    - Creates one article per page
    - Ensures content is always processed even if everything else fails
 
@@ -169,7 +171,12 @@ Three providers are supported for summarization:
 All providers use a unified `--model` argument to specify the model name.
 
 Key methods:
-- `_extract_articles_from_markdown()`: Fast markdown header parsing (primary)
+- `_extract_articles_from_markdown()`: Structural parsing + LLM classification (primary)
+- `_parse_markdown_sections()`: Parses `#` headers into `Section` objects with metadata
+- `_classify_sections_with_llm()`: Sends section summaries to LLM for article classification
+- `_classify_sections_heuristic()`: Heuristic fallback (word count, title patterns)
+- `_call_llm_for_classification()`: Unified LLM dispatch for all providers
+- `_build_articles_from_sections()`: Builds `Article` objects from classified sections
 - `_extract_articles_with_ai_anthropic()`: Uses Claude to segment documents (fallback 1)
 - `_extract_articles_with_ai_ollama()`: Uses Ollama to segment documents (fallback 1)
 - `_extract_articles_with_ai_gemini()`: Uses Gemini to segment documents (fallback 1)
@@ -185,7 +192,7 @@ Key methods:
 
 ### Page Marker Detection
 
-Regex pattern recognizes: `[page 1]`, `Page 5`, `pg. 10`, `p. 3`, etc.
+Regex patterns recognize: `[page 1]`, `Page 5`, `pg. 10`, `p. 3`, `<!-- PAGE N -->`, etc.
 
 ## Environment Variables
 
@@ -341,14 +348,16 @@ See `.gitignore` for the full list.
    - All logic lives in the package (`src/document_summarizer/`)
    - Single source of truth prevents divergence
 
-3. **Markdown Header Parsing** (2026-01): Fast, accurate article detection
-   - Primary detection method using markdown headers (`#`, `##`)
-   - Instant processing with no API calls required
-   - Successfully identifies all articles including previously missed ones
-   - Full content (not truncated) passed to AI for both identification and summaries
+3. **Smart Article Detection** (2026-02): Structural parsing + LLM classification
+   - Parses `#` headers into candidate sections with metadata (word count, byline, preview)
+   - LLM classifies which sections are real articles vs. non-content (TOC, contacts, calendars, etc.)
+   - Handles page-break continuations by merging split sections
+   - Token-efficient: sends section metadata (~2,500 tokens) instead of full document
+   - Heuristic fallback when LLM is unavailable
+   - Replaced naive header-per-article approach that created ~40+ false articles from newsletters
 
 4. **Multi-tier Fallback Strategy** (2026-01): Robust article segmentation
-   - Markdown → AI semantic analysis → Page-based splitting
+   - Structural parsing + LLM → AI semantic analysis → Page-based splitting
    - Ensures articles are always extracted, even on failures
    - Improved error handling for malformed AI responses
 
