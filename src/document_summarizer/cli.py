@@ -74,7 +74,13 @@ def main():
     )
     parser.add_argument(
         "--embedding-model",
-        help="Embedding model to use. Defaults: openai=text-embedding-3-small, anthropic=voyage-3, ollama=embeddinggemma, gemini=models/text-embedding-004"
+        help="Embedding model to use. Defaults: openai=text-embedding-3-small, anthropic=voyage-3, ollama=embeddinggemma, gemini=gemini-embedding-001"
+    )
+    parser.add_argument(
+        "--embedding-dimensions",
+        type=int,
+        default=768,
+        help="Output dimensionality for embeddings (default: 768). Currently supported by Gemini provider."
     )
     parser.add_argument(
         "--openai-api-key",
@@ -167,7 +173,8 @@ def main():
         embedding_provider=args.embedding_provider,
         embedding_model=args.embedding_model,
         openai_api_key=openai_api_key,
-        gemini_api_key=gemini_api_key
+        gemini_api_key=gemini_api_key,
+        embedding_dimensions=args.embedding_dimensions
     )
 
     # Find files

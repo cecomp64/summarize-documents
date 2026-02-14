@@ -98,12 +98,13 @@ class DocumentProcessor:
                  model_provider: str = "anthropic",
                  generate_embeddings: bool = False, embedding_provider: str = "openai",
                  embedding_model: Optional[str] = None, openai_api_key: Optional[str] = None,
-                 gemini_api_key: Optional[str] = None):
+                 gemini_api_key: Optional[str] = None, embedding_dimensions: Optional[int] = None):
         self.model_provider = model_provider
         self.model = model
         self.api_key = api_key
         self.generate_embeddings = generate_embeddings
         self.embedding_provider = embedding_provider
+        self.embedding_dimensions = embedding_dimensions
 
         # Set default embedding models based on provider
         if embedding_model:
@@ -117,7 +118,7 @@ class DocumentProcessor:
             elif embedding_provider == "ollama":
                 self.embedding_model = "embeddinggemma"  # Default Ollama embedding model
             elif embedding_provider == "gemini":
-                self.embedding_model = "models/text-embedding-004"  # Gemini embedding model
+                self.embedding_model = "gemini-embedding-001"  # Gemini embedding model
             else:
                 self.embedding_model = "text-embedding-3-small"
 
@@ -938,10 +939,13 @@ Respond in JSON format:
 
     def _generate_embedding_gemini(self, article: Article) -> None:
         """Generate embedding using Google Gemini API."""
-        response = self.embedding_client.models.embed_content(
-            model=self.embedding_model,
-            contents=article.summary
-        )
+        kwargs = {
+            "model": self.embedding_model,
+            "contents": article.summary,
+        }
+        if self.embedding_dimensions:
+            kwargs["config"] = {"output_dimensionality": self.embedding_dimensions}
+        response = self.embedding_client.models.embed_content(**kwargs)
         article.embedding = response.embeddings[0].values
 
     def extract_document_metadata(self, content: str, document: Document) -> None:
